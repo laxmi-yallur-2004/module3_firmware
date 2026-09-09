@@ -1,69 +1,35 @@
 #include <LiquidCrystal.h>
 
-// =====================================================
-// MODULE 3 - INTERRUPT LATENCY / JITTER
-// Arduino UNO
-// Software-based test
-// No oscilloscope required
-// =====================================================
-
-// LCD connections
-// RS -> D8
-// EN -> D9
-// D4 -> D4
-// D5 -> D5
-// D6 -> D6
-// D7 -> D7
-
+// ==================================================
+// LCD
+// RS, EN, D4, D5, D6, D7
+// ==================================================
 LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 
-
-// =====================================================
-// PIN DEFINITIONS
-// =====================================================
-
-const byte INTERRUPT_PIN = 2;
-const byte TEST_PULSE_PIN = 3;
-const byte ISR_OUTPUT_PIN = 13;
-
-
-// =====================================================
-// INTERRUPT VARIABLES
-// =====================================================
+// ==================================================
+// INTERRUPT PINS
+// ==================================================
+const byte INTERRUPT_PIN = 2;   // D2 = interrupt input
+const byte ISR_OUTPUT_PIN = 13; // D13 = ISR response
 
 volatile unsigned long interruptCount = 0;
 
-volatile unsigned long lastInterruptTime = 0;
-volatile unsigned long measuredLatency = 0;
-
-
-// =====================================================
+// ==================================================
 // SETUP
-// =====================================================
-
+// ==================================================
 void setup()
 {
   Serial.begin(115200);
 
-  // D2 receives interrupt
+  // Interrupt input
   pinMode(INTERRUPT_PIN, INPUT);
 
-  // D3 generates test pulse
-  pinMode(TEST_PULSE_PIN, OUTPUT);
-
-  // D13 shows ISR response
+  // ISR response output
   pinMode(ISR_OUTPUT_PIN, OUTPUT);
-
-  digitalWrite(TEST_PULSE_PIN, LOW);
   digitalWrite(ISR_OUTPUT_PIN, LOW);
 
-
-  // ===================================================
-  // LCD INITIALIZATION
-  // ===================================================
-
+  // LCD
   lcd.begin(16, 2);
-
   lcd.clear();
 
   lcd.setCursor(0, 0);
@@ -74,117 +40,73 @@ void setup()
 
   delay(1500);
 
-
   lcd.clear();
 
   lcd.setCursor(0, 0);
-  lcd.print("D3 -> D2");
+  lcd.print("D2 = INPUT");
 
   lcd.setCursor(0, 1);
-  lcd.print("INT TEST");
+  lcd.print("D13 = ISR");
 
-  delay(1500);
-
-
-  // ===================================================
-  // EXTERNAL INTERRUPT
-  // ===================================================
-
+  // Attach interrupt
   attachInterrupt(
     digitalPinToInterrupt(INTERRUPT_PIN),
     interruptISR,
     RISING
   );
 
-
-  Serial.println("================================");
-  Serial.println("MODULE 3 INTERRUPT TEST");
-  Serial.println("D3 -> D2");
-  Serial.println("D2 = INTERRUPT INPUT");
-  Serial.println("D13 = ISR RESPONSE");
-  Serial.println("================================");
+  Serial.println("==============================");
+  Serial.println("MODULE 3 - INTERRUPT TEST");
+  Serial.println("==============================");
+  Serial.println("CH1 -> D2");
+  Serial.println("CH2 -> D13");
+  Serial.println("D2 = Interrupt Input");
+  Serial.println("D13 = ISR Response");
+  Serial.println("==============================");
 }
 
-
-// =====================================================
+// ==================================================
 // MAIN LOOP
-// =====================================================
-
+// ==================================================
 void loop()
 {
-  static unsigned long lastDisplayCount = 0;
+  static unsigned long oldCount = 0;
 
-  // Generate a test pulse on D3
+  unsigned long count;
 
-  digitalWrite(TEST_PULSE_PIN, HIGH);
-
-  // Give the interrupt time to execute
-  delayMicroseconds(10);
-
-  digitalWrite(TEST_PULSE_PIN, LOW);
-
-
-  // Read interrupt counter safely
-
+  // Safely read variable modified by ISR
   noInterrupts();
-
-  unsigned long count = interruptCount;
-  unsigned long latency = measuredLatency;
-
+  count = interruptCount;
   interrupts();
 
-
-  // Update LCD when interrupt occurs
-
-  if (count != lastDisplayCount)
+  if (count != oldCount)
   {
-    lastDisplayCount = count;
+    oldCount = count;
 
+    // LCD
     lcd.clear();
 
     lcd.setCursor(0, 0);
-    lcd.print("INT:");
+    lcd.print("INT COUNT:");
     lcd.print(count);
 
     lcd.setCursor(0, 1);
-    lcd.print("TIME:");
-    lcd.print(latency);
-    lcd.print(" us");
+    lcd.print("ISR RESPONSE");
 
-
-    // Serial output
-
+    // Serial Monitor
     Serial.print("Interrupt = ");
-    Serial.print(count);
-
-    Serial.print("   Time = ");
-    Serial.print(latency);
-
-    Serial.println(" us");
+    Serial.println(count);
   }
-
-
-  delay(10);
 }
 
-
-// =====================================================
+// ==================================================
 // INTERRUPT SERVICE ROUTINE
-// =====================================================
-
+// ==================================================
 void interruptISR()
 {
-  // Record the interrupt occurrence
-
+  // Count interrupt
   interruptCount++;
 
-
-  // Toggle D13
-
+  // Toggle D13 immediately
   PORTB ^= (1 << PB5);
-
-
-  // Simple ISR timing marker
-
-  measuredLatency = micros();
 }
