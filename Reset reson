@@ -1,0 +1,84 @@
+#include <LiquidCrystal.h>
+#include <EEPROM.h>
+#include <avr/wdt.h>
+
+LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
+
+#define FAULT_ADDR  0
+#define REASON_ADDR 4
+#define TEST_ADDR   5
+
+#define SENSOR_FAULT 101
+#define WATCHDOG     1
+
+void setup()
+{
+  lcd.begin(16, 2);
+  Serial.begin(9600);
+
+  int fault;
+  byte reason = EEPROM.read(REASON_ADDR);
+  byte test = EEPROM.read(TEST_ADDR);
+
+  EEPROM.get(FAULT_ADDR, fault);
+
+  // First boot: save fault and reset automatically
+  if (test != 1)
+  {
+    fault = SENSOR_FAULT;
+
+    EEPROM.put(FAULT_ADDR, fault);
+    EEPROM.write(REASON_ADDR, WATCHDOG);
+    EEPROM.write(TEST_ADDR, 1);
+
+    lcd.clear();
+    lcd.print("FAULT SAVED");
+    lcd.setCursor(0, 1);
+    lcd.print("CODE: 101");
+
+    Serial.println("Fault saved: 101");
+    Serial.println("Starting watchdog...");
+
+    delay(2000);
+
+    wdt_enable(WDTO_1S);
+
+    while (1);
+  }
+
+  // After reset: retrieve data
+  lcd.clear();
+  lcd.print("RESET: WATCHDOG");
+
+  Serial.println("================");
+  Serial.println("MODULE 4");
+  Serial.println("================");
+  Serial.println("Reset Reason: WATCHDOG");
+
+  delay(2500);
+
+  lcd.clear();
+  lcd.print("LAST FAULT:");
+
+  lcd.setCursor(0, 1);
+  lcd.print(fault);
+
+  Serial.print("Last Fault Code: ");
+  Serial.println(fault);
+
+  if (fault == SENSOR_FAULT)
+    Serial.println("Fault: SENSOR");
+
+  delay(2500);
+
+  lcd.clear();
+  lcd.print("MODULE 4");
+  lcd.setCursor(0, 1);
+  lcd.print("TEST COMPLETE");
+
+  Serial.println("TEST COMPLETE");
+}
+
+void loop()
+{
+}
