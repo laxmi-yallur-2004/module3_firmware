@@ -1,84 +1,219 @@
+
 #include <LiquidCrystal.h>
 #include <EEPROM.h>
 #include <avr/wdt.h>
 
+// ==================================================
+// LCD
+// RS, EN, D4, D5, D6, D7
+// ==================================================
+
 LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 
-#define FAULT_ADDR  0
-#define REASON_ADDR 4
-#define TEST_ADDR   5
+// ==================================================
+// EEPROM ADDRESSES
+// ==================================================
 
-#define SENSOR_FAULT 101
-#define WATCHDOG     1
+#define FAULT_ADDR   0
+#define STATUS_ADDR  4
+
+// ==================================================
+// VALUES
+// ==================================================
+
+#define SENSOR_FAULT     101
+#define NO_RESET_PENDING 0
+#define WATCHDOG_PENDING 1
+
+// ==================================================
+// VARIABLES
+// ==================================================
+
+unsigned long startTime = 0;
+
+int stage = 0;
+
+// ==================================================
+// SETUP
+// ==================================================
 
 void setup()
 {
+  // Disable watchdog immediately after startup
+  wdt_disable();
+
   lcd.begin(16, 2);
   Serial.begin(9600);
 
+  // Read saved values
   int fault;
-  byte reason = EEPROM.read(REASON_ADDR);
-  byte test = EEPROM.read(TEST_ADDR);
+  byte status;
 
   EEPROM.get(FAULT_ADDR, fault);
+  status = EEPROM.read(STATUS_ADDR);
 
-  // First boot: save fault and reset automatically
-  if (test != 1)
+  // ==================================================
+  // WATCHDOG RESET RECOVERY
+  // ==================================================
+
+  if (status == WATCHDOG_PENDING)
+  {
+    lcd.clear();
+
+    lcd.setCursor(0, 0);
+    lcd.print("RESET:");
+
+    lcd.setCursor(0, 1);
+    lcd.print("WATCHDOG");
+
+    Serial.println("================");
+    Serial.println("MODULE 4");
+    Serial.println("================");
+    Serial.println("Reset Reason: WATCHDOG");
+
+    startTime = millis();
+
+    stage = 2;
+  }
+
+  // ==================================================
+  // NORMAL POWER ON
+  // ==================================================
+
+  else
   {
     fault = SENSOR_FAULT;
 
+    // Save fault code
     EEPROM.put(FAULT_ADDR, fault);
-    EEPROM.write(REASON_ADDR, WATCHDOG);
-    EEPROM.write(TEST_ADDR, 1);
+
+    // Clear any old reset marker
+    EEPROM.write(STATUS_ADDR, NO_RESET_PENDING);
 
     lcd.clear();
+
+    lcd.setCursor(0, 0);
     lcd.print("FAULT SAVED");
+
     lcd.setCursor(0, 1);
     lcd.print("CODE: 101");
 
-    Serial.println("Fault saved: 101");
-    Serial.println("Starting watchdog...");
+    Serial.println("================");
+    Serial.println("MODULE 4");
+    Serial.println("================");
+    Serial.println("Power On");
+    Serial.println("Saving Fault: 101");
 
-    delay(2000);
+    startTime = millis();
 
-    wdt_enable(WDTO_1S);
-
-    while (1);
+    stage = 1;
   }
-
-  // After reset: retrieve data
-  lcd.clear();
-  lcd.print("RESET: WATCHDOG");
-
-  Serial.println("================");
-  Serial.println("MODULE 4");
-  Serial.println("================");
-  Serial.println("Reset Reason: WATCHDOG");
-
-  delay(2500);
-
-  lcd.clear();
-  lcd.print("LAST FAULT:");
-
-  lcd.setCursor(0, 1);
-  lcd.print(fault);
-
-  Serial.print("Last Fault Code: ");
-  Serial.println(fault);
-
-  if (fault == SENSOR_FAULT)
-    Serial.println("Fault: SENSOR");
-
-  delay(2500);
-
-  lcd.clear();
-  lcd.print("MODULE 4");
-  lcd.setCursor(0, 1);
-  lcd.print("TEST COMPLETE");
-
-  Serial.println("TEST COMPLETE");
 }
+
+// ==================================================
+// LOOP
+// ==================================================
 
 void loop()
 {
+  unsigned long currentTime = millis();
+
+  // ==================================================
+  // STAGE 1
+  // Wait 2 seconds, then start watchdog
+  // ==================================================
+
+  if (stage == 1)
+  {
+    if (currentTime - startTime >= 2000)
+    {
+      // Tell next boot that watchdog reset is expected
+      EEPROM.write(STATUS_ADDR, WATCHDOG_PENDING);
+
+      lcd.clear();
+
+      lcd.setCursor(0, 0);
+      lcd.print("WATCHDOG");
+
+      lcd.setCursor(0, 1);
+      lcd.print("STARTING...");
+
+      Serial.println("Starting watchdog...");
+
+      // Enable 1-second watchdog
+      wdt_enable(WDTO_1S);
+
+      // Intentionally stop execution.
+      // Watchdog resets the Arduino after 1 second.
+      while (1)
+      {
+      }
+    }
+  }
+
+  // ==================================================
+  // STAGE 2
+  // Show last fault
+  // ==================================================
+
+  else if (stage == 2)
+  {
+    if (currentTime - startTime >= 2000)
+    {
+      int fault;
+
+      EEPROM.get(FAULT_ADDR, fault);
+
+      lcd.clear();
+
+      lcd.setCursor(0, 0);
+      lcd.print("LAST FAULT:");
+
+      lcd.setCursor(0, 1);
+      lcd.print(fault);
+
+      Serial.print("Last Fault Code: ");
+      Serial.println(fault);
+
+      startTime = currentTime;
+
+      stage = 3;
+    }
+  }
+
+  // ==================================================
+  // STAGE 3
+  // Test complete
+  // ==================================================
+
+  else if (stage == 3)
+  {
+    if (currentTime - startTime >= 2000)
+    {
+      lcd.clear();
+
+      lcd.setCursor(0, 0);
+      lcd.print("MODULE 4");
+
+      lcd.setCursor(0, 1);
+      lcd.print("TEST COMPLETE");
+
+      Serial.println("TEST COMPLETE");
+
+      // Clear watchdog marker
+      EEPROM.write(STATUS_ADDR, NO_RESET_PENDING);
+
+      stage = 4;
+    }
+  }
+
+  // ==================================================
+  // STAGE 4
+  // Finished
+  // ==================================================
+
+  else if (stage == 4)
+  {
+    // Test finished
+  }
 }
