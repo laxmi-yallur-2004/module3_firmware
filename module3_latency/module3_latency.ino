@@ -8,25 +8,21 @@
 LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 
 // ==================================================
-// INTERRUPT PINS
+// INTERRUPT PIN
 // ==================================================
 
 const byte INTERRUPT_PIN = 2;
 const byte ISR_OUTPUT_PIN = 13;
 
 // ==================================================
-// INTERRUPT COUNT
+// INTERRUPT VARIABLES
 // ==================================================
 
 volatile unsigned long interruptCount = 0;
+volatile unsigned long lastInterruptTime = 0;
 
-// ==================================================
-// LCD STARTUP TIMER
-// NON-BLOCKING
-// ==================================================
-
-unsigned long startupTime = 0;
-bool startupMessageDone = false;
+// Ignore interrupts occurring within 50 ms
+const unsigned long DEBOUNCE_TIME = 50000UL;
 
 // ==================================================
 // INTERRUPT SERVICE ROUTINE
@@ -34,12 +30,26 @@ bool startupMessageDone = false;
 
 void interruptISR()
 {
-  // Count interrupt
-  interruptCount++;
+  unsigned long currentTime = micros();
 
-  // Toggle D13 immediately
-  PORTB ^= (1 << PB5);
+  // Debounce
+  if (currentTime - lastInterruptTime >= DEBOUNCE_TIME)
+  {
+    interruptCount++;
+
+    // Toggle D13
+    PORTB ^= (1 << PB5);
+
+    lastInterruptTime = currentTime;
+  }
 }
+
+// ==================================================
+// STARTUP TIMER
+// ==================================================
+
+unsigned long startupTime = 0;
+bool startupMessageDone = false;
 
 // ==================================================
 // SETUP
@@ -47,13 +57,10 @@ void interruptISR()
 
 void setup()
 {
-  // Serial
-  Serial.begin(115200);
+  // Internal pull-up
+  pinMode(INTERRUPT_PIN, INPUT_PULLUP);
 
-  // Interrupt input
-  pinMode(INTERRUPT_PIN, INPUT);
-
-  // ISR response output
+  // D13 = ISR response
   pinMode(ISR_OUTPUT_PIN, OUTPUT);
   digitalWrite(ISR_OUTPUT_PIN, LOW);
 
@@ -70,21 +77,12 @@ void setup()
 
   startupTime = millis();
 
-  // Attach interrupt
+  // D2 HIGH -> LOW triggers interrupt
   attachInterrupt(
     digitalPinToInterrupt(INTERRUPT_PIN),
     interruptISR,
-    RISING
+    FALLING
   );
-
-  Serial.println("==============================");
-  Serial.println("MODULE 3 - INTERRUPT TEST");
-  Serial.println("==============================");
-  Serial.println("CH1 -> D2");
-  Serial.println("CH2 -> D13");
-  Serial.println("D2 = Interrupt Input");
-  Serial.println("D13 = ISR Response");
-  Serial.println("==============================");
 }
 
 // ==================================================
@@ -98,7 +96,7 @@ void loop()
   unsigned long count;
 
   // ==================================================
-  // NON-BLOCKING STARTUP DISPLAY
+  // NON-BLOCKING STARTUP
   // ==================================================
 
   if (!startupMessageDone)
@@ -118,7 +116,7 @@ void loop()
   }
 
   // ==================================================
-  // SAFELY READ ISR VARIABLE
+  // READ INTERRUPT COUNT SAFELY
   // ==================================================
 
   noInterrupts();
@@ -128,7 +126,7 @@ void loop()
   interrupts();
 
   // ==================================================
-  // DISPLAY NEW INTERRUPT COUNT
+  // DISPLAY COUNT
   // ==================================================
 
   if (count != oldCount)
@@ -143,8 +141,5 @@ void loop()
 
     lcd.setCursor(0, 1);
     lcd.print("ISR RESPONSE");
-
-    Serial.print("Interrupt = ");
-    Serial.println(count);
   }
 }
