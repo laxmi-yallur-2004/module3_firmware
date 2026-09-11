@@ -4,21 +4,50 @@
 // LCD
 // RS, EN, D4, D5, D6, D7
 // ==================================================
+
 LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 
 // ==================================================
 // INTERRUPT PINS
 // ==================================================
-const byte INTERRUPT_PIN = 2;   // D2 = interrupt input
-const byte ISR_OUTPUT_PIN = 13; // D13 = ISR response
+
+const byte INTERRUPT_PIN = 2;
+const byte ISR_OUTPUT_PIN = 13;
+
+// ==================================================
+// INTERRUPT COUNT
+// ==================================================
 
 volatile unsigned long interruptCount = 0;
 
 // ==================================================
+// LCD STARTUP TIMER
+// NON-BLOCKING
+// ==================================================
+
+unsigned long startupTime = 0;
+bool startupMessageDone = false;
+
+// ==================================================
+// INTERRUPT SERVICE ROUTINE
+// ==================================================
+
+void interruptISR()
+{
+  // Count interrupt
+  interruptCount++;
+
+  // Toggle D13 immediately
+  PORTB ^= (1 << PB5);
+}
+
+// ==================================================
 // SETUP
 // ==================================================
+
 void setup()
 {
+  // Serial
   Serial.begin(115200);
 
   // Interrupt input
@@ -30,6 +59,7 @@ void setup()
 
   // LCD
   lcd.begin(16, 2);
+
   lcd.clear();
 
   lcd.setCursor(0, 0);
@@ -38,15 +68,7 @@ void setup()
   lcd.setCursor(0, 1);
   lcd.print("INT LATENCY");
 
-  delay(1500);
-
-  lcd.clear();
-
-  lcd.setCursor(0, 0);
-  lcd.print("D2 = INPUT");
-
-  lcd.setCursor(0, 1);
-  lcd.print("D13 = ISR");
+  startupTime = millis();
 
   // Attach interrupt
   attachInterrupt(
@@ -66,24 +88,53 @@ void setup()
 }
 
 // ==================================================
-// MAIN LOOP
+// LOOP
 // ==================================================
+
 void loop()
 {
   static unsigned long oldCount = 0;
 
   unsigned long count;
 
-  // Safely read variable modified by ISR
+  // ==================================================
+  // NON-BLOCKING STARTUP DISPLAY
+  // ==================================================
+
+  if (!startupMessageDone)
+  {
+    if (millis() - startupTime >= 1500)
+    {
+      startupMessageDone = true;
+
+      lcd.clear();
+
+      lcd.setCursor(0, 0);
+      lcd.print("D2 = INPUT");
+
+      lcd.setCursor(0, 1);
+      lcd.print("D13 = ISR");
+    }
+  }
+
+  // ==================================================
+  // SAFELY READ ISR VARIABLE
+  // ==================================================
+
   noInterrupts();
+
   count = interruptCount;
+
   interrupts();
+
+  // ==================================================
+  // DISPLAY NEW INTERRUPT COUNT
+  // ==================================================
 
   if (count != oldCount)
   {
     oldCount = count;
 
-    // LCD
     lcd.clear();
 
     lcd.setCursor(0, 0);
@@ -93,20 +144,7 @@ void loop()
     lcd.setCursor(0, 1);
     lcd.print("ISR RESPONSE");
 
-    // Serial Monitor
     Serial.print("Interrupt = ");
     Serial.println(count);
   }
-}
-
-// ==================================================
-// INTERRUPT SERVICE ROUTINE
-// ==================================================
-void interruptISR()
-{
-  // Count interrupt
-  interruptCount++;
-
-  // Toggle D13 immediately
-  PORTB ^= (1 << PB5);
 }
