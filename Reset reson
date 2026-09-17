@@ -1,307 +1,405 @@
+#include <Arduino.h>
 #include <LiquidCrystal.h>
 #include <EEPROM.h>
-#include <avr/wdt.h>
 #include <avr/io.h>
+#include <avr/wdt.h>
 
-// ==================================================
-// LCD
-// ==================================================
+/* =====================================================
+   LCD CONNECTION
+   RS = 8
+   EN = 9
+   D4 = 4
+   D5 = 5
+   D6 = 6
+   D7 = 7
+   ===================================================== */
 
 LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 
-// ==================================================
-// EEPROM
-// ==================================================
+/* =====================================================
+   EEPROM
+   ===================================================== */
 
 #define FAULT_ADDR 0
 
-// ==================================================
-// FAULT
-// ==================================================
-
 #define SENSOR_FAULT 101
 
-// ==================================================
-// RESET FLAGS FROM OPTIBOOT
-// ==================================================
+/* =====================================================
+   RESET FLAG STORAGE
+   ===================================================== */
 
-uint8_t resetFlag __attribute__((section(".noinit")));
+/*
+   MCUSR = MCU Status Register.
 
-// ==================================================
-// COPY RESET FLAGS FROM R2
-// ==================================================
+   We save MCUSR before normal Arduino startup
+   can modify it.
+*/
 
-void resetFlagsInit(void)
-  __attribute__((naked))
-  __attribute__((used))
-  __attribute__((section(".init0")));
+uint8_t resetCause
+    __attribute__((section(".noinit")));
 
-void resetFlagsInit(void)
+/*
+   Optiboot saves the reset flags in R2.
+   Save R2 before normal C startup changes it.
+*/
+
+uint8_t optibootResetFlag
+    __attribute__((section(".noinit")));
+
+
+/* =====================================================
+   CAPTURE OPTIBOOT RESET FLAG
+   ===================================================== */
+
+void captureOptibootFlag(void)
+    __attribute__((naked))
+    __attribute__((used))
+    __attribute__((section(".init0")));
+
+void captureOptibootFlag(void)
 {
-  __asm__ __volatile__(
-    "sts %0, r2\n"
-    :
-    : "m" (resetFlag)
-  );
+    __asm__ __volatile__(
+        "sts %0, r2\n"
+        : "=m" (optibootResetFlag)
+        :
+    );
 }
 
-// ==================================================
-// VARIABLES
-// ==================================================
+
+/* =====================================================
+   CAPTURE MCUSR
+   ===================================================== */
+
+void captureMCUSR(void)
+    __attribute__((naked))
+    __attribute__((used))
+    __attribute__((section(".init3")));
+
+void captureMCUSR(void)
+{
+    resetCause = MCUSR;
+
+    /*
+       Clear reset flags after saving them.
+    */
+    MCUSR = 0;
+
+    /*
+       Disable watchdog immediately.
+    */
+    wdt_disable();
+}
+
+
+/* =====================================================
+   VARIABLES
+   ===================================================== */
 
 unsigned long startTime = 0;
 
-uint8_t stage = 0;
+byte stage = 0;
 
-// ==================================================
-// SETUP
-// ==================================================
+
+/* =====================================================
+   SETUP
+   ===================================================== */
 
 void setup()
 {
-  // --------------------------------------------------
-  // Disable watchdog safely
-  // --------------------------------------------------
+    lcd.begin(16, 2);
 
-  MCUSR = 0;
-  wdt_disable();
+    Serial.begin(9600);
 
-  // --------------------------------------------------
-  // LCD
-  // --------------------------------------------------
+    /*
+       Check actual watchdog reset.
 
-  lcd.begin(16, 2);
+       WDRF = Watchdog System Reset Flag
+       WDRF is bit 3 of MCUSR.
+    */
 
-  // --------------------------------------------------
-  // Serial
-  // --------------------------------------------------
+    bool watchdogReset = false;
 
-  Serial.begin(9600);
+    /*
+       Check MCUSR.
+    */
 
-  // --------------------------------------------------
-  // Read saved fault
-  // --------------------------------------------------
+    if (resetCause & (1 << WDRF))
+    {
+        watchdogReset = true;
+    }
 
-  int fault;
+    /*
+       Also check reset flag passed by Optiboot.
+    */
 
-  EEPROM.get(FAULT_ADDR, fault);
+    if (optibootResetFlag & (1 << WDRF))
+    {
+        watchdogReset = true;
+    }
 
-  // ==================================================
-  // HEADER
-  // ==================================================
 
-  Serial.println();
-  Serial.println("==============================");
-  Serial.println("        MODULE 4");
-  Serial.println("==============================");
+    /* =================================================
+       WATCHDOG RESET DETECTED
+       ================================================= */
 
-  // ==================================================
-  // CHECK RESET FLAG PASSED BY OPTIBOOT
-  // ==================================================
+    if (watchdogReset)
+    {
+        int lastFault = 0;
 
-  if (resetFlag & (1 << WDRF))
-  {
-    // ==================================================
-    // WATCHDOG RESET
-    // ==================================================
+        EEPROM.get(FAULT_ADDR, lastFault);
 
-    Serial.println("RESET STATUS");
-    Serial.println("MCUSR -> WDRF");
-    Serial.println("WDRF = 1");
-    Serial.println("Reset Reason: WATCHDOG");
+        /*
+           SERIAL OUTPUT
+        */
 
-    // --------------------------------------------------
-    // LCD
-    // --------------------------------------------------
+        Serial.println();
+        Serial.println("==============================");
+        Serial.println("        MODULE 4");
+        Serial.println("==============================");
+        Serial.println("RESET STATUS");
 
-    lcd.clear();
+        Serial.print("MCUSR = 0x");
+        Serial.println(resetCause, HEX);
 
-    lcd.setCursor(0, 0);
-    lcd.print("RESET:");
+        Serial.print("WDRF = ");
 
-    lcd.setCursor(0, 1);
-    lcd.print("WATCHDOG");
+        if (resetCause & (1 << WDRF))
+        {
+            Serial.println("1");
+        }
+        else
+        {
+            Serial.println("1 (Optiboot)");
+        }
 
-    startTime = millis();
+        Serial.println("Reset Reason: WATCHDOG");
 
-    stage = 2;
-  }
-  else
-  {
-    // ==================================================
-    // NORMAL POWER ON
-    // ==================================================
+        Serial.print("Last Fault Code: ");
+        Serial.println(lastFault);
 
-    Serial.println("RESET STATUS");
-    Serial.println("MCUSR -> WDRF");
-    Serial.println("WDRF = 0");
-    Serial.println("Reset Reason: POWER ON");
+        /*
+           LCD OUTPUT
+        */
 
-    // --------------------------------------------------
-    // Sensor fault
-    // --------------------------------------------------
+        lcd.clear();
 
-    fault = SENSOR_FAULT;
+        lcd.setCursor(0, 0);
+        lcd.print("RESET: WATCHDOG");
 
-    EEPROM.put(FAULT_ADDR, fault);
+        lcd.setCursor(0, 1);
+        lcd.print("WDRF = 1");
 
-    Serial.println("Sensor Fault Detected");
-    Serial.println("Saving Fault Code: 101");
+        /*
+           Move to next stage.
+        */
 
-    // --------------------------------------------------
-    // LCD
-    // --------------------------------------------------
+        startTime = millis();
 
-    lcd.clear();
+        stage = 2;
+    }
 
-    lcd.setCursor(0, 0);
-    lcd.print("FAULT SAVED");
 
-    lcd.setCursor(0, 1);
-    lcd.print("CODE: 101");
+    /* =================================================
+       NORMAL POWER-ON
+       ================================================= */
 
-    startTime = millis();
+    else
+    {
+        /*
+           Save sensor fault.
+        */
 
-    stage = 1;
-  }
+        EEPROM.put(FAULT_ADDR, SENSOR_FAULT);
+
+        /*
+           SERIAL
+        */
+
+        Serial.println();
+        Serial.println("==============================");
+        Serial.println("        MODULE 4");
+        Serial.println("==============================");
+        Serial.println("RESET STATUS");
+
+        Serial.print("MCUSR = 0x");
+        Serial.println(resetCause, HEX);
+
+        Serial.println("WDRF = 0");
+
+        Serial.println("Reset Reason: POWER ON");
+
+        Serial.println("Sensor Fault Detected");
+
+        Serial.println("Saving Fault Code: 101");
+
+        /*
+           LCD
+        */
+
+        lcd.clear();
+
+        lcd.setCursor(0, 0);
+        lcd.print("FAULT SAVED");
+
+        lcd.setCursor(0, 1);
+        lcd.print("CODE: 101");
+
+        /*
+           Start watchdog sequence.
+        */
+
+        startTime = millis();
+
+        stage = 1;
+    }
 }
 
-// ==================================================
-// LOOP
-// ==================================================
+
+/* =====================================================
+   LOOP
+   ===================================================== */
 
 void loop()
 {
-  unsigned long currentTime = millis();
+    unsigned long currentTime = millis();
 
-  // ==================================================
-  // STAGE 1
-  // POWER ON
-  // ==================================================
 
-  if (stage == 1)
-  {
-    if (currentTime - startTime >= 2000)
+    /* =================================================
+       STAGE 1
+       NORMAL POWER-ON
+       ================================================= */
+
+    if (stage == 1)
     {
-      // ------------------------------------------------
-      // LCD
-      // ------------------------------------------------
+        /*
+           Wait 2 seconds.
+           No delay() is used.
+        */
 
-      lcd.clear();
+        if (currentTime - startTime >= 2000)
+        {
+            /*
+               LCD
+            */
 
-      lcd.setCursor(0, 0);
-      lcd.print("WATCHDOG");
+            lcd.clear();
 
-      lcd.setCursor(0, 1);
-      lcd.print("STARTING...");
+            lcd.setCursor(0, 0);
+            lcd.print("WATCHDOG");
 
-      // ------------------------------------------------
-      // SERIAL
-      // ------------------------------------------------
+            lcd.setCursor(0, 1);
+            lcd.print("STARTING...");
 
-      Serial.println();
-      Serial.println("Starting Watchdog");
-      Serial.println("Timeout: 1 second");
+            /*
+               SERIAL
+            */
 
-      Serial.flush();
+            Serial.println();
+            Serial.println("Starting Watchdog");
+            Serial.println("Timeout: 1 second");
 
-      // ------------------------------------------------
-      // Enable watchdog
-      // ------------------------------------------------
+            Serial.flush();
 
-      wdt_enable(WDTO_1S);
+            /*
+               Enable actual ATmega328P watchdog.
+            */
 
-      // ------------------------------------------------
-      // Wait for watchdog reset
-      // ------------------------------------------------
+            wdt_enable(WDTO_1S);
 
-      while (1)
-      {
-      }
+            /*
+               Do not call wdt_reset().
+
+               Watchdog expires automatically.
+               ATmega328P performs hardware reset.
+            */
+
+            while (1)
+            {
+            }
+        }
     }
-  }
 
-  // ==================================================
-  // STAGE 2
-  // WATCHDOG RECOVERY
-  // ==================================================
 
-  else if (stage == 2)
-  {
-    if (currentTime - startTime >= 2000)
+    /* =================================================
+       STAGE 2
+       AFTER WATCHDOG RESET
+       ================================================= */
+
+    else if (stage == 2)
     {
-      int fault;
+        if (currentTime - startTime >= 2000)
+        {
+            int lastFault = 0;
 
-      EEPROM.get(FAULT_ADDR, fault);
+            EEPROM.get(FAULT_ADDR, lastFault);
 
-      // ------------------------------------------------
-      // LCD
-      // ------------------------------------------------
+            /*
+               LCD
+            */
 
-      lcd.clear();
+            lcd.clear();
 
-      lcd.setCursor(0, 0);
-      lcd.print("LAST FAULT:");
+            lcd.setCursor(0, 0);
+            lcd.print("LAST FAULT:");
 
-      lcd.setCursor(0, 1);
-      lcd.print(fault);
+            lcd.setCursor(0, 1);
+            lcd.print(lastFault);
 
-      // ------------------------------------------------
-      // SERIAL
-      // ------------------------------------------------
+            /*
+               SERIAL
+            */
 
-      Serial.println();
-      Serial.println("WATCHDOG RECOVERY");
+            Serial.print("Last Fault Code: ");
+            Serial.println(lastFault);
 
-      Serial.print("Last Fault Code: ");
-      Serial.println(fault);
+            startTime = currentTime;
 
-      startTime = currentTime;
-
-      stage = 3;
+            stage = 3;
+        }
     }
-  }
 
-  // ==================================================
-  // STAGE 3
-  // COMPLETE
-  // ==================================================
 
-  else if (stage == 3)
-  {
-    if (currentTime - startTime >= 2000)
+    /* =================================================
+       STAGE 3
+       TEST COMPLETE
+       ================================================= */
+
+    else if (stage == 3)
     {
-      // ------------------------------------------------
-      // LCD
-      // ------------------------------------------------
+        if (currentTime - startTime >= 2000)
+        {
+            /*
+               LCD
+            */
 
-      lcd.clear();
+            lcd.clear();
 
-      lcd.setCursor(0, 0);
-      lcd.print("MODULE 4");
+            lcd.setCursor(0, 0);
+            lcd.print("MODULE 4");
 
-      lcd.setCursor(0, 1);
-      lcd.print("TEST COMPLETE");
+            lcd.setCursor(0, 1);
+            lcd.print("TEST COMPLETE");
 
-      // ------------------------------------------------
-      // SERIAL
-      // ------------------------------------------------
+            /*
+               SERIAL
+            */
 
-      Serial.println();
-      Serial.println("==============================");
-      Serial.println("TEST COMPLETE");
-      Serial.println("==============================");
+            Serial.println("TEST COMPLETE");
 
-      stage = 4;
+            stage = 4;
+        }
     }
-  }
 
-  // ==================================================
-  // STAGE 4
-  // ==================================================
 
-  else if (stage == 4)
-  {
-    // Finished
-  }
+    /* =================================================
+       STAGE 4
+       FINISHED
+       ================================================= */
+
+    else if (stage == 4)
+    {
+        /*
+           Test finished.
+        */
+    }
 }
