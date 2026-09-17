@@ -1,81 +1,325 @@
 # Module 3 Firmware
 
-This project contains two embedded firmware experiments using Arduino UNO.
+## What is this project?
 
-## Hardware
+This project demonstrates **two embedded concepts** using Arduino UNO:
+
+1. **Interrupt and ISR**
+2. **Watchdog Reset and Reset Reason**
+
+---
+
+# Hardware
 
 * Arduino UNO
 * 16x2 LCD
-* Jumper wire
+* Jumper wires
 
-## LCD Pins
+### LCD Connection
 
-* RS → 8
-* EN → 9
-* D4 → 4
-* D5 → 5
-* D6 → 6
-* D7 → 7
+| LCD | Arduino |
+| --- | ------- |
+| RS  | D8      |
+| EN  | D9      |
+| D4  | D4      |
+| D5  | D5      |
+| D6  | D6      |
+| D7  | D7      |
 
-## Module 3 - Interrupt
+---
 
-File: `module3_latency/module3_latency.ino`
+# Task 1 – Interrupt
 
-This program demonstrates an external interrupt using **D2**.
+## What is an Interrupt?
 
-* D2 → Interrupt input
-* D13 → ISR response
-* D2 is connected to GND using a jumper.
-* Interrupt count is displayed on the LCD.
-* 50 ms debounce is used.
-* `millis()` is used for non-blocking timing.
+An interrupt means:
 
-### Output
+> When an important event happens, the Arduino temporarily stops its normal work and immediately handles that event.
 
-```text
-MODULE 3
-INT LATENCY
-```
-
-Then:
+In this project:
 
 ```text
-D2 = INPUT
-D13 = ISR
+D2 → Interrupt Input
+D13 → ISR Response
 ```
 
-When D2 is triggered:
+---
+
+## How it works
+
+D2 is normally HIGH because we use:
+
+```cpp
+pinMode(D2, INPUT_PULLUP);
+```
+
+When D2 is connected to GND:
 
 ```text
-INT COUNT:1
-ISR RESPONSE
+HIGH → LOW
 ```
 
-## Module 4 - Watchdog and Fault Recovery
+an interrupt occurs.
 
-File: `Reset reson`
+The Arduino then runs the ISR:
 
-This program demonstrates **watchdog reset and fault recovery**.
+```cpp
+void interruptISR()
+```
 
-* Fault code `101` is saved in EEPROM.
-* Watchdog timer is started.
-* Arduino automatically resets.
-* After reset, the saved fault code is retrieved.
-* LCD and Serial Monitor show the result.
+---
 
-### Output
+## What does the ISR do?
+
+The ISR:
+
+1. Checks debounce time
+2. Increases interrupt count
+3. Toggles D13
+
+The count is increased using:
+
+```cpp
+interruptCount++;
+```
+
+D13 is toggled using:
+
+```cpp
+PORTB ^= (1 << PB5);
+```
+
+D13 is connected to **PB5** inside the ATmega328P.
+
+---
+
+## Simple Flow
 
 ```text
-Power On
-Saving Fault: 101
-Starting watchdog...
-Reset Reason: WATCHDOG
-Last Fault Code: 101
-TEST COMPLETE
+Press / connect D2 to GND
+          ↓
+      Interrupt
+          ↓
+         ISR
+          ↓
+   Increase Count
+          ↓
+      Toggle D13
+          ↓
+   Display on LCD
 ```
 
-## Result
+---
 
-**Module 3:** External interrupt handling.
+## Debouncing
 
-**Module 4:** Watchdog reset and EEPROM fault recovery.
+Mechanical buttons can create multiple unwanted signals.
+
+So the code waits for:
+
+```text
+50 milliseconds
+```
+
+between accepted interrupts.
+
+This prevents one button press from being counted many times.
+
+---
+
+# Task 2 – Watchdog Reset
+
+## What is Watchdog?
+
+A watchdog is like a **safety timer**.
+
+If the program gets stuck and does not reset the watchdog timer, the watchdog automatically resets the Arduino.
+
+---
+
+## In this project
+
+The watchdog timeout is:
+
+```text
+1 second
+```
+
+The code enables it using:
+
+```cpp
+wdt_enable(WDTO_1S);
+```
+
+The program intentionally does not call:
+
+```cpp
+wdt_reset();
+```
+
+So after about 1 second:
+
+```text
+Watchdog expires
+       ↓
+Arduino resets
+```
+
+---
+
+# Reset Reason
+
+After the Arduino resets, we want to know:
+
+> Why did the Arduino reset?
+
+The ATmega328P provides the:
+
+```text
+MCUSR
+```
+
+register.
+
+MCUSR means:
+
+**MCU Status Register**
+
+It contains reset information.
+
+---
+
+# WDRF
+
+The code checks:
+
+```cpp
+if (resetCause & (1 << WDRF))
+```
+
+`WDRF` means:
+
+**Watchdog System Reset Flag**
+
+If WDRF is set:
+
+```text
+WDRF = 1
+```
+
+it means:
+
+> The previous reset was caused by the watchdog.
+
+---
+
+# EEPROM
+
+The project stores the fault code:
+
+```text
+101
+```
+
+in EEPROM.
+
+EEPROM is memory that keeps its data even after the Arduino resets or powers off.
+
+So the sequence is:
+
+```text
+Save Fault Code 101
+        ↓
+Watchdog Reset
+        ↓
+Arduino starts again
+        ↓
+Read EEPROM
+        ↓
+Find Fault Code 101
+```
+
+---
+
+# Simple Watchdog Flow
+
+```text
+Arduino Starts
+      ↓
+Save Fault Code 101
+      ↓
+Start Watchdog
+      ↓
+Wait for Watchdog
+      ↓
+Watchdog expires
+      ↓
+Arduino Resets
+      ↓
+Check MCUSR
+      ↓
+WDRF = 1
+      ↓
+Reset Reason = WATCHDOG
+      ↓
+Read Fault Code
+      ↓
+Display 101
+```
+
+---
+
+# What We Demonstrated
+
+### Task 1
+
+We demonstrated:
+
+* External interrupt
+* ISR
+* Interrupt counting
+* Debouncing
+* D13 response
+
+### Task 2
+
+We demonstrated:
+
+* Watchdog timer
+* Automatic reset
+* Reset reason detection
+* MCUSR
+* WDRF
+* EEPROM fault storage
+
+---
+
+# Important Result
+
+The main learning from this module is:
+
+```text
+INTERRUPT
+   ↓
+Handle important event immediately
+
+WATCHDOG
+   ↓
+Detect and recover from a stuck program
+
+MCUSR + WDRF
+   ↓
+Find why the Arduino reset
+
+EEPROM
+   ↓
+Remember the previous fault
+```
+
+---
+
+# Conclusion
+
+Module 3 teaches how embedded firmware can:
+
+**respond to external events using interrupts and recover from software problems using the watchdog timer.**
