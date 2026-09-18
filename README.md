@@ -64,7 +64,7 @@ an interrupt occurs.
 The Arduino then runs the ISR:
 
 ```cpp
-void interruptISR()
+void interruptHandler()
 ```
 
 ---
@@ -204,7 +204,7 @@ if (resetCause & (1 << WDRF))
 If WDRF is set:
 
 ```text
-WDRF = 1
+WDRF = 0
 ```
 
 it means:
