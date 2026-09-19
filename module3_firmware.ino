@@ -31,6 +31,7 @@ EEPROM fault storage
 No delay()
 No dynamic memory
 Non-blocking main loop
+State-machine based control
 ============================================================
 */
 
@@ -78,13 +79,13 @@ bool task1DisplayDone = false;
 #define SENSOR_FAULT     101
 
 #define WATCHDOG_MARKER  0xA5
+#define WD_MARKER_ADDR   1
 
 
 /*
    These variables are placed in .noinit.
 
-   .noinit variables survive a watchdog reset.
-   They are NOT initialized by normal C startup.
+   They are captured before normal C startup.
 */
 
 uint8_t resetCause
@@ -94,21 +95,9 @@ uint8_t optibootResetFlag
     __attribute__((section(".noinit")));
 
 
-/*
-   EEPROM marker.
-
-   This is only a fallback mechanism.
-
-   It tells us:
-
-   "Before the previous reset, this program deliberately
-    enabled the watchdog."
-
-   The actual hardware reset flag is still checked using WDRF.
-*/
-
-#define WD_MARKER_ADDR  1
-
+/* =========================================================
+   WATCHDOG INFORMATION
+   ========================================================= */
 
 uint8_t watchdogResetDetected = 0;
 
@@ -116,7 +105,26 @@ uint8_t effectiveResetCause = 0;
 
 uint8_t lastFault = 0;
 
-uint8_t task2Stage = 0;
+
+/* =========================================================
+   TASK 2 : STATE MACHINE
+   ========================================================= */
+
+enum Task2State
+{
+    TASK2_POWER_ON,
+    TASK2_WATCHDOG_WAIT,
+    TASK2_RECOVERY,
+    TASK2_COMPLETE,
+    TASK2_FINISHED
+};
+
+Task2State task2State = TASK2_POWER_ON;
+
+
+/* =========================================================
+   TASK 2 : TIMER
+   ========================================================= */
 
 unsigned long task2Timer = 0;
 
@@ -124,14 +132,6 @@ unsigned long task2Timer = 0;
 /* =========================================================
    TASK 2 : EARLY OPTIBOOT RESET FLAG CAPTURE
    ========================================================= */
-
-/*
-   Optiboot can pass the reset cause in CPU register R2.
-
-   This function executes in .init0, before normal C startup.
-
-   R2 is saved into optibootResetFlag.
-*/
 
 void captureOptibootFlag(void)
     __attribute__((naked))
@@ -152,15 +152,13 @@ void captureOptibootFlag(void)
    ========================================================= */
 
 /*
-   This executes very early during startup.
+   Executes very early during startup.
 
-   It:
-   1. Reads MCUSR
-   2. Saves it into resetCause
-   3. Clears MCUSR
-   4. Disables watchdog
+   1. Read MCUSR
+   2. Save MCUSR into resetCause
+   3. Clear MCUSR
 
-   WDRF is bit 3 of MCUSR on ATmega328P.
+   WDRF = bit 3 of MCUSR.
 */
 
 void captureMCUSR(void)
@@ -194,10 +192,7 @@ void interruptHandler()
     unsigned long currentTime = micros();
 
     /*
-       Simple software debounce.
-
-       Only accept an interrupt if enough time has passed
-       since the previous accepted interrupt.
+       Software debounce.
     */
 
     if ((currentTime - lastInterruptTime) >= DEBOUNCE_TIME)
@@ -205,10 +200,7 @@ void interruptHandler()
         interruptCount++;
 
         /*
-           D13 is controlled directly through PORTB.
-
-           Arduino Uno:
-           D13 = PB5
+           Arduino Uno D13 = PB5
         */
 
         PORTB ^= (1 << PB5);
@@ -224,28 +216,25 @@ void interruptHandler()
 
 void setup()
 {
-    /*
-       -----------------------------------------------------
+    /* -----------------------------------------------------
        COMMON HARDWARE
-       -----------------------------------------------------
-    */
+       ----------------------------------------------------- */
 
     lcd.begin(16, 2);
 
     Serial.begin(9600);
 
 
-    /*
-       -----------------------------------------------------
+    /* -----------------------------------------------------
        TASK 1 INITIALIZATION
-       -----------------------------------------------------
-    */
+       ----------------------------------------------------- */
 
     pinMode(INTERRUPT_PIN, INPUT_PULLUP);
 
     pinMode(ISR_OUTPUT_PIN, OUTPUT);
 
     digitalWrite(ISR_OUTPUT_PIN, LOW);
+
 
     attachInterrupt(
         digitalPinToInterrupt(INTERRUPT_PIN),
@@ -254,28 +243,18 @@ void setup()
     );
 
 
-    /*
-       Start Task 1 timer.
-    */
-
     task1StartTime = millis();
 
 
-    /*
-       -----------------------------------------------------
+    /* =====================================================
        TASK 2 : DETERMINE RESET REASON
-       -----------------------------------------------------
-    */
-
-    /*
-       Copy the early captured MCUSR value.
-    */
+       ===================================================== */
 
     effectiveResetCause = resetCause;
 
 
     /*
-       If MCUSR capture is zero, try the Optiboot R2 value.
+       If MCUSR is zero, check Optiboot flag.
     */
 
     if (effectiveResetCause == 0 &&
@@ -285,11 +264,9 @@ void setup()
     }
 
 
-    /*
-       -----------------------------------------------------
+    /* -----------------------------------------------------
        ACTUAL HARDWARE WDRF CHECK
-       -----------------------------------------------------
-    */
+       ----------------------------------------------------- */
 
     if (effectiveResetCause & (1 << WDRF))
     {
@@ -301,23 +278,13 @@ void setup()
     }
 
 
-    /*
-       -----------------------------------------------------
+    /* -----------------------------------------------------
        EEPROM WATCHDOG MARKER
-       -----------------------------------------------------
-    */
+       ----------------------------------------------------- */
 
-    uint8_t watchdogMarker = EEPROM.read(WD_MARKER_ADDR);
+    uint8_t watchdogMarker =
+        EEPROM.read(WD_MARKER_ADDR);
 
-
-    /*
-       If the previous program execution deliberately enabled
-       the watchdog and the MCU restarted, use this as a
-       fallback indication of a watchdog reset.
-
-       IMPORTANT:
-       WDRF is still printed separately.
-    */
 
     if (watchdogMarker == WATCHDOG_MARKER)
     {
@@ -325,37 +292,34 @@ void setup()
 
         /*
            Clear marker immediately.
-
-           This prevents the marker from being reused on the
-           next normal power-on.
         */
 
-        EEPROM.update(WD_MARKER_ADDR, 0);
+        EEPROM.update(
+            WD_MARKER_ADDR,
+            0
+        );
     }
 
 
-    /*
-       -----------------------------------------------------
+    /* =====================================================
        SERIAL HEADER
-       -----------------------------------------------------
-    */
+       ===================================================== */
 
     Serial.println();
+
     Serial.println("==============================");
     Serial.println("        MODULE 3 FIRMWARE");
     Serial.println("==============================");
 
 
-    /*
-       -----------------------------------------------------
-       WATCHDOG RESET
-       -----------------------------------------------------
-    */
+    /* =====================================================
+       WATCHDOG RESET PATH
+       ===================================================== */
 
     if (watchdogResetDetected)
     {
         /*
-           Read previously saved fault code.
+           Read saved fault.
         */
 
         lastFault = EEPROM.read(FAULT_ADDR);
@@ -364,29 +328,38 @@ void setup()
         Serial.println("RESET STATUS");
         Serial.println();
 
+
         Serial.print("MCUSR Captured = 0x");
         Serial.println(resetCause, HEX);
+
 
         Serial.print("Optiboot Flag  = 0x");
         Serial.println(optibootResetFlag, HEX);
 
+
         Serial.print("Effective Cause = 0x");
         Serial.println(effectiveResetCause, HEX);
 
+
         Serial.print("WDRF = ");
+
         Serial.println(
-            (effectiveResetCause & (1 << WDRF)) ? 1 : 0
+            (effectiveResetCause & (1 << WDRF))
+            ? 1
+            : 0
         );
 
+
         Serial.println("Reset Reason: WATCHDOG");
+
 
         Serial.print("Last Fault Code: ");
         Serial.println(lastFault);
 
 
-        /*
+        /* -------------------------------------------------
            LCD
-        */
+           ------------------------------------------------- */
 
         lcd.clear();
 
@@ -406,32 +379,38 @@ void setup()
 
 
         /*
-           Continue to final Task 2 stage.
+           Move to recovery state.
+
+           No delay.
         */
 
-        task2Stage = 2;
+        task2State = TASK2_RECOVERY;
+
         task2Timer = millis();
     }
 
 
-    /*
-       -----------------------------------------------------
-       POWER-ON / NORMAL START
-       -----------------------------------------------------
-    */
+    /* =====================================================
+       POWER-ON PATH
+       ===================================================== */
 
     else
     {
         /*
-           Save sensor fault code.
-
-           This simulates a fault that happened before the
-           watchdog recovery.
+           Simulated sensor fault.
         */
 
         lastFault = SENSOR_FAULT;
 
-        EEPROM.update(FAULT_ADDR, lastFault);
+
+        /*
+           Save fault code.
+        */
+
+        EEPROM.update(
+            FAULT_ADDR,
+            lastFault
+        );
 
 
         Serial.println("Reset Reason: POWER ON");
@@ -442,9 +421,9 @@ void setup()
         Serial.println(lastFault);
 
 
-        /*
+        /* -------------------------------------------------
            LCD
-        */
+           ------------------------------------------------- */
 
         lcd.clear();
 
@@ -457,31 +436,33 @@ void setup()
 
 
         /*
-           Task 2 stage 1:
+           Start state machine.
 
-           Wait without delay().
+           No 2-second artificial wait.
+
+           Watchdog starts immediately.
         */
 
-        task2Stage = 1;
-        task2Timer = millis();
+        task2State = TASK2_POWER_ON;
     }
 
 
-    /*
-       -----------------------------------------------------
+    /* -----------------------------------------------------
        TASK 1 START MESSAGE
-       -----------------------------------------------------
-    */
+       ----------------------------------------------------- */
 
     Serial.println();
+
     Serial.println("TASK 1: INTERRUPT READY");
+
     Serial.println("D2 = INTERRUPT INPUT");
+
     Serial.println("D13 = ISR RESPONSE");
 }
 
 
 /* =========================================================
-   LOOP
+   MAIN LOOP
    ========================================================= */
 
 void loop()
@@ -494,7 +475,9 @@ void loop()
        ===================================================== */
 
     /*
-       Wait 1.5 seconds without delay().
+       Display result after 1.5 seconds.
+
+       This is non-blocking.
     */
 
     if (!task1DisplayDone &&
@@ -504,7 +487,7 @@ void loop()
 
 
         /*
-           Safely copy volatile interrupt counter.
+           Safely copy volatile counter.
         */
 
         noInterrupts();
@@ -514,31 +497,32 @@ void loop()
         interrupts();
 
 
-        /*
-           Serial output
-        */
+        /* -------------------------------------------------
+           SERIAL OUTPUT
+           ------------------------------------------------- */
 
         Serial.println();
+
         Serial.println("------------------------------");
         Serial.println("TASK 1 RESULT");
         Serial.println("------------------------------");
 
         Serial.println("D2 = INTERRUPT INPUT");
+
         Serial.println("D13 = ISR RESPONSE");
 
         Serial.print("Interrupt Count = ");
         Serial.println(countCopy);
 
 
-        /*
-           LCD output
-        */
+        /* -------------------------------------------------
+           LCD OUTPUT
+           ------------------------------------------------- */
 
         lcd.clear();
 
         lcd.setCursor(0, 0);
         lcd.print("INT COUNT:");
-
         lcd.print(countCopy);
 
         lcd.setCursor(0, 1);
@@ -550,33 +534,21 @@ void loop()
 
 
     /* =====================================================
-       TASK 2 : POWER-ON PATH
+       TASK 2 : STATE MACHINE
        ===================================================== */
 
-    if (task2Stage == 1)
+    switch (task2State)
     {
-        /*
-           Wait 2 seconds without delay().
-        */
 
-        if (currentMillis - task2Timer >= 2000UL)
-        {
-            Serial.println();
-            Serial.println("------------------------------");
-            Serial.println("STARTING WATCHDOG");
-            Serial.println("------------------------------");
+        /* =================================================
+           STATE 1 : POWER ON
+           ================================================= */
 
-            Serial.println("Timeout: 1 second");
-
+        case TASK2_POWER_ON:
 
             /*
-               IMPORTANT:
-
-               Mark that this program is intentionally about
-               to wait for a watchdog reset.
-
-               EEPROM.update() only writes when the value
-               changes, reducing unnecessary EEPROM wear.
+               Save marker immediately before enabling
+               the watchdog.
             */
 
             EEPROM.update(
@@ -585,16 +557,25 @@ void loop()
             );
 
 
+            Serial.println();
+
+            Serial.println("------------------------------");
+            Serial.println("STARTING WATCHDOG");
+            Serial.println("------------------------------");
+
+            Serial.println("Timeout: 1 second");
+
+
             /*
-               Enable watchdog reset.
+               Enable hardware watchdog.
 
-               No wdt_reset() is called after this.
+               No wdt_reset() will be called.
 
-               Therefore the watchdog expires and resets
-               the ATmega328P.
+               Therefore the watchdog will expire.
             */
 
             wdt_enable(WDTO_1S);
+
 
             Serial.println("WATCHDOG ENABLED");
 
@@ -602,34 +583,52 @@ void loop()
 
 
             /*
-               Stage 4 means:
-
-               WAIT FOR WATCHDOG RESET
-
-               No delay().
-               No blocking loop.
-               The CPU simply continues running until the
-               watchdog resets it.
+               Move to waiting state.
             */
 
-            task2Stage = 4;
-        }
-    }
+            task2State = TASK2_WATCHDOG_WAIT;
+
+            break;
 
 
-    /* =====================================================
-       TASK 2 : WATCHDOG RESET RESULT
-       ===================================================== */
+        /* =================================================
+           STATE 2 : WAIT FOR WATCHDOG RESET
+           ================================================= */
 
-    else if (task2Stage == 2)
-    {
-        if (currentMillis - task2Timer >= 2000UL)
-        {
+        case TASK2_WATCHDOG_WAIT:
+
+            /*
+               Intentionally empty.
+
+               Do NOT call wdt_reset().
+
+               The hardware watchdog will expire and
+               reset the ATmega328P.
+
+               After reset, setup() runs again and
+               MCUSR/WDRF is checked.
+            */
+
+            break;
+
+
+        /* =================================================
+           STATE 3 : WATCHDOG RECOVERY
+           ================================================= */
+
+        case TASK2_RECOVERY:
+
+            /*
+               Recovery is shown immediately after the
+               watchdog reset.
+
+               No artificial 2-second wait.
+            */
+
             lcd.clear();
 
             lcd.setCursor(0, 0);
             lcd.print("LAST FAULT:");
-
             lcd.print(lastFault);
 
             lcd.setCursor(0, 1);
@@ -637,6 +636,7 @@ void loop()
 
 
             Serial.println();
+
             Serial.println("------------------------------");
             Serial.println("WATCHDOG RECOVERY");
             Serial.println("------------------------------");
@@ -647,24 +647,27 @@ void loop()
             Serial.println("Recovery successful");
 
 
-            task2Stage = 3;
-            task2Timer = currentMillis;
-        }
-    }
+            /*
+               Move to complete state.
+            */
+
+            task2State = TASK2_COMPLETE;
+
+            break;
 
 
-    /* =====================================================
-       TASK 2 : TEST COMPLETE
-       ===================================================== */
+        /* =================================================
+           STATE 4 : COMPLETE
+           ================================================= */
 
-    else if (task2Stage == 3)
-    {
-        if (currentMillis - task2Timer >= 2000UL)
-        {
+        case TASK2_COMPLETE:
+
             Serial.println();
+
             Serial.println("==============================");
             Serial.println("TASK 2 : COMPLETE");
             Serial.println("==============================");
+
 
             lcd.clear();
 
@@ -676,47 +679,24 @@ void loop()
 
 
             /*
-               Stop this stage.
-
-               The watchdog is already disabled by the early
-               startup code after reset.
+               Final state.
             */
 
-            task2Stage = 5;
-        }
-    }
+            task2State = TASK2_FINISHED;
+
+            break;
 
 
-    /* =====================================================
-       TASK 2 : WAITING FOR WATCHDOG
-       ===================================================== */
+        /* =================================================
+           STATE 5 : FINISHED
+           ================================================= */
 
-    else if (task2Stage == 4)
-    {
-        /*
-           INTENTIONALLY EMPTY.
+        case TASK2_FINISHED:
 
-           Do NOT call:
+            /*
+               Nothing more to do.
+            */
 
-               wdt_reset();
-
-           The watchdog must expire.
-
-           The ATmega328P will reset automatically.
-        */
-    }
-
-
-    /* =====================================================
-       TASK 2 : FINISHED
-       ===================================================== */
-
-    else if (task2Stage == 5)
-    {
-        /*
-           Nothing to do.
-
-           Main application remains running.
-        */
+            break;
     }
 }
